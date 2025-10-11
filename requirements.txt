@@ -1,0 +1,14 @@
+# Core dependencies
+biopython>=1.79
+requests>=2.31.0
+
+# Optional: Data analysis and visualization
+pandas>=1.5.0
+plotly>=5.17.0
+
+# Optional: Enhanced analysis
+numpy>=1.24.0
+
+# Optional: Web interface (future)
+# flask>=2.3.0
+# dash>=2.14.0
