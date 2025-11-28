@@ -1,20 +1,19 @@
 """
-Mutation Impact Analyzer - Fixed Version
-Correctly handles stop codons in mutation classification
+Mutation Impact Analyzer - Main Module
+Analyzes DNA mutations and their impact on protein function
+Generates comprehensive reports and visualizations
 """
 
-from Bio.Seq import Seq
-from Bio import SeqIO
-import requests
-import json
-from datetime import datetime
+import re
+from pathogenicity import PathogenicityPredictor
 
-# Genetic code dictionary with stop codons explicitly marked
+
+# Genetic Code Dictionary
 GENETIC_CODE = {
     'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L',
     'TCT': 'S', 'TCC': 'S', 'TCA': 'S', 'TCG': 'S',
-    'TAT': 'Y', 'TAC': 'Y', 'TAA': '*', 'TAG': '*',  # * represents STOP
-    'TGT': 'C', 'TGC': 'C', 'TGA': '*', 'TGG': 'W',  # * represents STOP
+    'TAT': 'Y', 'TAC': 'Y', 'TAA': '*', 'TAG': '*',
+    'TGT': 'C', 'TGC': 'C', 'TGA': '*', 'TGG': 'W',
     'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L',
     'CCT': 'P', 'CCC': 'P', 'CCA': 'P', 'CCG': 'P',
     'CAT': 'H', 'CAC': 'H', 'CAA': 'Q', 'CAG': 'Q',
@@ -29,554 +28,362 @@ GENETIC_CODE = {
     'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G'
 }
 
-# Stop codons set for easy checking
-STOP_CODONS = {'TAA', 'TAG', 'TGA'}
-
-# Amino acid names (including STOP)
-AA_NAMES = {
-    'A': 'Alanine', 'C': 'Cysteine', 'D': 'Aspartic acid', 'E': 'Glutamic acid',
-    'F': 'Phenylalanine', 'G': 'Glycine', 'H': 'Histidine', 'I': 'Isoleucine',
-    'K': 'Lysine', 'L': 'Leucine', 'M': 'Methionine', 'N': 'Asparagine',
-    'P': 'Proline', 'Q': 'Glutamine', 'R': 'Arginine', 'S': 'Serine',
-    'T': 'Threonine', 'V': 'Valine', 'W': 'Tryptophan', 'Y': 'Tyrosine',
-    '*': 'STOP'
+# Amino Acid Properties
+AA_PROPERTIES = {
+    'hydrophobic': ['A', 'V', 'I', 'L', 'M', 'F', 'W', 'P'],
+    'polar': ['S', 'T', 'C', 'Y', 'N', 'Q'],
+    'charged_positive': ['K', 'R', 'H'],
+    'charged_negative': ['D', 'E'],
+    'special': ['G'],
+    'stop': ['*']
 }
 
-
-def is_stop_codon(codon):
-    """
-    Check if a codon is a stop codon.
-    
-    Args:
-        codon (str): Three-nucleotide DNA sequence
-        
-    Returns:
-        bool: True if codon is a stop codon (TAA, TAG, TGA)
-    """
-    return codon.upper() in STOP_CODONS
-
-
-def translate_codon(codon):
-    """
-    Translate a DNA codon to its corresponding amino acid.
-    Now properly handles stop codons.
-    
-    Args:
-        codon (str): Three-nucleotide DNA sequence
-        
-    Returns:
-        str: Single-letter amino acid code (or '*' for stop codon)
-        
-    Raises:
-        ValueError: If codon is not exactly 3 nucleotides or contains invalid characters
-    """
-    if len(codon) != 3:
-        raise ValueError(f"Codon must be exactly 3 nucleotides, got {len(codon)}")
-    
-    codon = codon.upper()
-    
-    # Validate nucleotides
-    valid_nucleotides = set('ATCG')
-    if not all(n in valid_nucleotides for n in codon):
-        raise ValueError(f"Codon contains invalid nucleotides: {codon}")
-    
-    if codon not in GENETIC_CODE:
-        raise ValueError(f"Unknown codon: {codon}")
-    
-    return GENETIC_CODE[codon]
+# COSMIC Database (simplified)
+COSMIC_DB = {
+    'TP53': {
+        'R175H': {'count': 450, 'cancer_types': ['Breast', 'Lung', 'Colorectal'], 'role': 'DNA binding'},
+        'R248Q': {'count': 380, 'cancer_types': ['Breast', 'Ovarian'], 'role': 'DNA binding'},
+        'R273H': {'count': 420, 'cancer_types': ['Colorectal', 'Lung'], 'role': 'DNA binding'},
+    },
+    'BRCA1': {
+        'C61G': {'count': 120, 'cancer_types': ['Breast', 'Ovarian'], 'role': 'RING domain'},
+        'M1652I': {'count': 85, 'cancer_types': ['Breast'], 'role': 'BRCT domain'},
+    },
+    'EGFR': {
+        'L858R': {'count': 890, 'cancer_types': ['Lung'], 'role': 'Kinase domain'},
+        'T790M': {'count': 650, 'cancer_types': ['Lung'], 'role': 'Kinase domain'},
+    }
+}
 
 
 def validate_sequence(sequence):
     """
-    Validate DNA sequence.
-    Now allows stop codons in the sequence.
+    Validate DNA sequence
     
     Args:
-        sequence (str): DNA sequence to validate
+        sequence: DNA sequence string
         
     Returns:
-        tuple: (is_valid (bool), error_message (str or None))
+        tuple: (is_valid, error_message)
     """
-    # Remove whitespace
-    sequence = sequence.replace(" ", "").replace("\n", "").replace("\r", "")
-    
-    # Check if empty
     if not sequence:
-        return False, "Sequence is empty"
+        return False, "Empty sequence"
     
-    # Check for valid nucleotides only
-    valid_nucleotides = set('ATCGatcg')
-    if not all(n in valid_nucleotides for n in sequence):
-        invalid_chars = set(sequence) - valid_nucleotides
-        return False, f"Sequence contains invalid characters: {invalid_chars}"
+    if not re.match('^[ATCG]+$', sequence.upper()):
+        invalid_chars = set(sequence.upper()) - set('ATCG')
+        return False, f"Invalid characters found: {', '.join(invalid_chars)}"
     
-    # Check if length is divisible by 3
     if len(sequence) % 3 != 0:
-        return False, f"Sequence length ({len(sequence)}) is not divisible by 3. Incomplete codons detected."
+        return False, f"Sequence length ({len(sequence)}) is not divisible by 3"
     
-    return True, None
+    return True, "Valid"
 
 
-def classify_mutation(original_codon, mutated_codon):
+def load_fasta(filepath):
     """
-    Classify mutation type with proper stop codon handling.
+    Load sequence from FASTA file
     
     Args:
-        original_codon (str): Original three-nucleotide sequence
-        mutated_codon (str): Mutated three-nucleotide sequence
+        filepath: Path to FASTA file
         
     Returns:
-        dict: Classification information including type, amino acids, and description
-    """
-    original_codon = original_codon.upper()
-    mutated_codon = mutated_codon.upper()
-    
-    # Translate codons
-    original_aa = translate_codon(original_codon)
-    mutated_aa = translate_codon(mutated_codon)
-    
-    # Get amino acid names
-    original_aa_name = AA_NAMES.get(original_aa, "Unknown")
-    mutated_aa_name = AA_NAMES.get(mutated_aa, "Unknown")
-    
-    # Classify mutation type
-    if original_aa == mutated_aa:
-        # Silent mutation
-        mutation_type = "Silent"
-        description = f"Synonymous mutation - both codons code for {original_aa_name}"
-        impact = "LOW"
-        
-    elif is_stop_codon(mutated_codon):
-        # Nonsense mutation (creates stop codon)
-        mutation_type = "Nonsense"
-        description = f"Creates premature stop codon - truncates protein"
-        impact = "VERY HIGH"
-        
-    elif is_stop_codon(original_codon):
-        # Stop-loss mutation (removes stop codon)
-        mutation_type = "Stop-loss"
-        description = f"Removes stop codon - extends protein with {mutated_aa_name}"
-        impact = "HIGH"
-        
-    else:
-        # Missense mutation
-        mutation_type = "Missense"
-        description = f"Changes {original_aa_name} to {mutated_aa_name}"
-        impact = "MODERATE"
-    
-    return {
-        'type': mutation_type,
-        'original_codon': original_codon,
-        'mutated_codon': mutated_codon,
-        'original_aa': original_aa,
-        'mutated_aa': mutated_aa,
-        'original_aa_name': original_aa_name,
-        'mutated_aa_name': mutated_aa_name,
-        'description': description,
-        'impact': impact
-    }
-
-
-def calculate_pathogenicity_score(mutation_info, gene_name):
-    """
-    Calculate pathogenicity score (0-5) based on mutation characteristics.
-    
-    Args:
-        mutation_info (dict): Mutation classification information
-        gene_name (str): Name of the gene
-        
-    Returns:
-        dict: Pathogenicity assessment including score, level, and recommendations
-    """
-    # Critical genes that warrant higher risk scores
-    critical_genes = {
-        'TP53', 'BRCA1', 'BRCA2', 'PTEN', 'APC', 'RB1', 'VHL',
-        'MLH1', 'MSH2', 'MSH6', 'PMS2', 'KRAS', 'BRAF', 'EGFR'
-    }
-    
-    # Base score from mutation type
-    base_scores = {
-        'Silent': 0,
-        'Missense': 3,
-        'Nonsense': 5,
-        'Stop-loss': 4
-    }
-    
-    mutation_type = mutation_info['type']
-    score = base_scores.get(mutation_type, 3)
-    
-    # Adjust score for gene importance
-    if gene_name.upper() in critical_genes:
-        if mutation_type == 'Missense':
-            score = 4  # Upgrade missense in critical genes
-        # Nonsense and Stop-loss already at max or near-max
-    
-    # Determine risk level
-    risk_levels = {
-        0: "NO RISK",
-        1: "VERY LOW",
-        2: "LOW",
-        3: "MODERATE",
-        4: "HIGH",
-        5: "VERY HIGH"
-    }
-    
-    risk_level = risk_levels.get(score, "UNKNOWN")
-    
-    # Determine classification
-    if score >= 4:
-        classification = "LIKELY PATHOGENIC"
-    elif score == 3:
-        classification = "UNCERTAIN SIGNIFICANCE"
-    elif score >= 1:
-        classification = "LIKELY BENIGN"
-    else:
-        classification = "BENIGN"
-    
-    # Generate recommendations
-    recommendations = []
-    if score >= 4:
-        recommendations = [
-            "Genetic counseling strongly recommended",
-            "Clinical confirmatory testing advised",
-            "Family history evaluation warranted",
-            "Enhanced screening protocol",
-            "Consider genetic testing for family members"
-        ]
-    elif score == 3:
-        recommendations = [
-            "Consider genetic counseling",
-            "Monitor for additional clinical evidence",
-            "Family history may provide context"
-        ]
-    elif score >= 1:
-        recommendations = [
-            "Routine monitoring",
-            "Low clinical concern"
-        ]
-    else:
-        recommendations = [
-            "No action required",
-            "Silent mutation - no protein change"
-        ]
-    
-    return {
-        'score': score,
-        'risk_level': risk_level,
-        'classification': classification,
-        'recommendations': recommendations,
-        'is_critical_gene': gene_name.upper() in critical_genes
-    }
-
-
-def query_clinvar(gene_name, amino_acid_change):
-    """
-    Query ClinVar database for variant information.
-    This is a simplified version - in production, use proper API.
-    
-    Args:
-        gene_name (str): Gene symbol
-        amino_acid_change (str): Amino acid change notation (e.g., R175H)
-        
-    Returns:
-        dict: ClinVar information if available
+        tuple: (sequence, description)
     """
     try:
-        # Note: This is a placeholder. Real implementation would use ClinVar API
-        # https://www.ncbi.nlm.nih.gov/clinvar/
+        with open(filepath, 'r') as f:
+            lines = f.readlines()
         
-        print("Querying ClinVar database...")
+        if not lines:
+            raise ValueError("Empty file")
         
-        # Simulated response for demonstration
-        known_variants = {
-            'TP53': {
-                'R175H': {
-                    'significance': 'Pathogenic',
-                    'submissions': 146,
-                    'review_status': 'Reviewed by expert panel'
-                }
-            }
-        }
+        description = lines[0].strip().lstrip('>')
+        sequence = ''.join(line.strip() for line in lines[1:] if line.strip())
+        sequence = sequence.upper()
         
-        if gene_name in known_variants and amino_acid_change in known_variants[gene_name]:
-            return {
-                'found': True,
-                'data': known_variants[gene_name][amino_acid_change]
-            }
+        is_valid, error = validate_sequence(sequence)
+        if not is_valid:
+            raise ValueError(f"Invalid sequence in FASTA file: {error}")
         
-        return {'found': False, 'message': 'Variant not found in ClinVar'}
-        
-    except Exception as e:
-        return {'found': False, 'error': str(e)}
-
-
-def query_cosmic(gene_name):
-    """
-    Query COSMIC database for gene information.
-    This is a simplified version.
+        return sequence, description
     
-    Args:
-        gene_name (str): Gene symbol
-        
-    Returns:
-        dict: COSMIC information if available
-    """
-    try:
-        print("Querying COSMIC database...")
-        
-        # Simulated cancer gene information
-        cancer_genes = {
-            'TP53': {
-                'role': 'Tumor suppressor',
-                'cancers': ['Li-Fraumeni syndrome', 'Colorectal cancer', 'Breast cancer', 'Lung cancer'],
-                'mutation_frequency': 'Very high (>50% of cancers)'
-            },
-            'KRAS': {
-                'role': 'Oncogene',
-                'cancers': ['Pancreatic cancer (90%)', 'Colorectal cancer (40%)', 'Lung cancer (30%)'],
-                'mutation_frequency': 'High (25-30% of cancers)'
-            },
-            'BRAF': {
-                'role': 'Oncogene',
-                'cancers': ['Melanoma (50%)', 'Colorectal cancer (10%)', 'Thyroid cancer (40%)'],
-                'mutation_frequency': 'Moderate'
-            }
-        }
-        
-        if gene_name in cancer_genes:
-            return {
-                'found': True,
-                'data': cancer_genes[gene_name]
-            }
-        
-        return {'found': False, 'message': 'Gene not found in COSMIC'}
-        
-    except Exception as e:
-        return {'found': False, 'error': str(e)}
-
-
-def generate_report(gene_name, position, original_nt, mutated_nt, 
-                   mutation_info, pathogenicity, clinvar_data, cosmic_data):
-    """
-    Generate comprehensive text report.
-    
-    Args:
-        gene_name (str): Gene name
-        position (int): Mutation position
-        original_nt (str): Original nucleotide
-        mutated_nt (str): Mutated nucleotide
-        mutation_info (dict): Mutation classification
-        pathogenicity (dict): Pathogenicity assessment
-        clinvar_data (dict): ClinVar query results
-        cosmic_data (dict): COSMIC query results
-        
-    Returns:
-        str: Formatted report text
-    """
-    report = []
-    report.append("=" * 70)
-    report.append("MUTATION ANALYSIS REPORT")
-    report.append("=" * 70)
-    report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    report.append("")
-    
-    # Basic Information
-    report.append("BASIC INFORMATION")
-    report.append("-" * 70)
-    report.append(f"Gene: {gene_name}")
-    report.append(f"Position: {position}")
-    report.append(f"Original Nucleotide: {original_nt}")
-    report.append(f"Mutated Nucleotide: {mutated_nt}")
-    report.append("")
-    
-    # Mutation Classification
-    report.append("MUTATION CLASSIFICATION")
-    report.append("-" * 70)
-    report.append(f"Type: {mutation_info['type']}")
-    report.append(f"Original Codon: {mutation_info['original_codon']} ({mutation_info['original_aa_name']})")
-    report.append(f"Mutated Codon: {mutation_info['mutated_codon']} ({mutation_info['mutated_aa_name']})")
-    
-    if mutation_info['type'] != 'Silent':
-        codon_number = (position - 1) // 3 + 1
-        aa_notation = f"{mutation_info['original_aa']}{codon_number}{mutation_info['mutated_aa']}"
-        report.append(f"Amino Acid Change: {aa_notation}")
-    
-    report.append(f"Description: {mutation_info['description']}")
-    report.append(f"Impact: {mutation_info['impact']}")
-    report.append("")
-    
-    # Pathogenicity Assessment
-    report.append("PATHOGENICITY ASSESSMENT")
-    report.append("-" * 70)
-    report.append(f"Risk Score: {pathogenicity['score']}/5")
-    report.append(f"Risk Level: {pathogenicity['risk_level']}")
-    report.append(f"Classification: {pathogenicity['classification']}")
-    
-    if pathogenicity['is_critical_gene']:
-        report.append(f"Note: {gene_name} is a critical disease/cancer gene")
-    
-    if pathogenicity['score'] >= 4:
-        report.append("\nWARNING: This mutation may significantly impact protein function")
-    
-    report.append("")
-    
-    # Clinical Recommendations
-    report.append("CLINICAL RECOMMENDATIONS")
-    report.append("-" * 70)
-    for i, rec in enumerate(pathogenicity['recommendations'], 1):
-        report.append(f"{i}. {rec}")
-    report.append("")
-    
-    # Database Information
-    report.append("DATABASE INFORMATION")
-    report.append("-" * 70)
-    
-    # ClinVar
-    if clinvar_data.get('found'):
-        data = clinvar_data['data']
-        report.append(f"ClinVar: {data['significance']}")
-        report.append(f"  Submissions: {data['submissions']}")
-        report.append(f"  Review Status: {data['review_status']}")
-    else:
-        report.append("ClinVar: Not found or not queried")
-    
-    report.append("")
-    
-    # COSMIC
-    if cosmic_data.get('found'):
-        data = cosmic_data['data']
-        report.append(f"COSMIC Gene Information:")
-        report.append(f"  Role: {data['role']}")
-        report.append(f"  Mutation Frequency: {data['mutation_frequency']}")
-        report.append(f"  Associated Cancers:")
-        for cancer in data['cancers']:
-            report.append(f"    - {cancer}")
-    else:
-        report.append("COSMIC: Not found or not queried")
-    
-    report.append("")
-    report.append("=" * 70)
-    report.append("DISCLAIMER")
-    report.append("-" * 70)
-    report.append("This analysis is for research and educational purposes only.")
-    report.append("NOT intended for clinical diagnosis or medical decisions.")
-    report.append("Always consult qualified genetic professionals for clinical interpretation.")
-    report.append("=" * 70)
-    
-    return "\n".join(report)
-
-
-def load_fasta(filename):
-    """
-    Load DNA sequence from FASTA file.
-    
-    Args:
-        filename (str): Path to FASTA file
-        
-    Returns:
-        tuple: (sequence (str), description (str))
-    """
-    try:
-        record = SeqIO.read(filename, "fasta")
-        return str(record.seq), record.description
     except FileNotFoundError:
-        raise FileNotFoundError(f"FASTA file not found: {filename}")
+        raise FileNotFoundError(f"FASTA file not found: {filepath}")
     except Exception as e:
         raise Exception(f"Error reading FASTA file: {e}")
 
 
-def analyze_mutation(sequence, gene_name, position, new_nucleotide):
+def translate_codon(codon):
+    """Translate DNA codon to amino acid"""
+    return GENETIC_CODE.get(codon.upper(), 'X')
+
+
+def get_aa_property(aa):
+    """Get amino acid property category"""
+    for prop, amino_acids in AA_PROPERTIES.items():
+        if aa in amino_acids:
+            return prop
+    return 'unknown'
+
+
+def classify_mutation(original_aa, mutated_aa, original_codon, mutated_codon):
     """
-    Main analysis function.
+    Classify mutation type and impact
+    
+    Returns:
+        dict: Classification information
+    """
+    if original_aa == mutated_aa:
+        return {
+            'type': 'Synonymous',
+            'impact': 'Silent mutation - no amino acid change',
+            'severity': 'benign'
+        }
+    
+    if mutated_aa == '*':
+        return {
+            'type': 'Nonsense',
+            'impact': 'Premature stop codon - protein truncation',
+            'severity': 'high'
+        }
+    
+    if original_aa == '*':
+        return {
+            'type': 'Nonstop',
+            'impact': 'Stop codon lost - extended protein',
+            'severity': 'high'
+        }
+    
+    # Missense mutation analysis
+    orig_prop = get_aa_property(original_aa)
+    mut_prop = get_aa_property(mutated_aa)
+    
+    if orig_prop == mut_prop:
+        return {
+            'type': 'Missense (Conservative)',
+            'impact': f'Similar amino acid properties ({orig_prop})',
+            'severity': 'moderate'
+        }
+    else:
+        return {
+            'type': 'Missense (Non-conservative)',
+            'impact': f'Changed from {orig_prop} to {mut_prop}',
+            'severity': 'high'
+        }
+
+
+def check_cosmic_database(gene_name, mutation_notation):
+    """
+    Check if mutation is in COSMIC database
     
     Args:
-        sequence (str): DNA sequence
-        gene_name (str): Gene name
-        position (int): Position to mutate (1-indexed)
-        new_nucleotide (str): New nucleotide (A/T/C/G)
+        gene_name: Gene name
+        mutation_notation: e.g., 'R175H'
+        
+    Returns:
+        dict: COSMIC data or empty dict
+    """
+    gene_data = COSMIC_DB.get(gene_name.upper(), {})
+    mutation_data = gene_data.get(mutation_notation, None)
+    
+    if mutation_data:
+        return {
+            'found': True,
+            'data': mutation_data
+        }
+    
+    return {'found': False}
+
+
+def analyze_mutation(sequence, gene_name, position, new_nucleotide):
+    """
+    Main analysis function
+    
+    Args:
+        sequence: Original DNA sequence
+        gene_name: Name of the gene
+        position: 1-indexed position to mutate
+        new_nucleotide: New nucleotide (A/T/C/G)
         
     Returns:
         dict: Complete analysis results
     """
-    # Clean and validate sequence
-    sequence = sequence.replace(" ", "").replace("\n", "").replace("\r", "").upper()
-    is_valid, error_msg = validate_sequence(sequence)
-    
+    # Validate inputs
+    is_valid, error = validate_sequence(sequence)
     if not is_valid:
-        raise ValueError(f"Invalid sequence: {error_msg}")
+        raise ValueError(f"Invalid sequence: {error}")
     
-    # Validate position
     if position < 1 or position > len(sequence):
-        raise ValueError(f"Position {position} is out of range (1-{len(sequence)})")
+        raise ValueError(f"Position {position} out of range (1-{len(sequence)})")
     
-    # Validate nucleotide
-    new_nucleotide = new_nucleotide.upper()
-    if new_nucleotide not in 'ATCG':
-        raise ValueError(f"Invalid nucleotide: {new_nucleotide}. Must be A, T, C, or G")
+    if new_nucleotide.upper() not in 'ATCG':
+        raise ValueError(f"Invalid nucleotide: {new_nucleotide}")
+    
+    # Convert to 0-indexed
+    pos_idx = position - 1
     
     # Get original nucleotide
-    original_nt = sequence[position - 1]
+    original_nucleotide = sequence[pos_idx]
     
-    # Check if mutation actually changes anything
-    if original_nt == new_nucleotide:
-        raise ValueError(f"Position {position} already contains nucleotide {new_nucleotide}")
+    if original_nucleotide == new_nucleotide.upper():
+        raise ValueError(f"Position {position} already contains {new_nucleotide}")
     
-    # Determine codon boundaries
-    codon_start = ((position - 1) // 3) * 3
-    codon_number = codon_start // 3 + 1
+    # Determine codon position
+    codon_number = (pos_idx // 3) + 1
+    codon_start = (pos_idx // 3) * 3
+    position_in_codon = (pos_idx % 3) + 1
     
-    # Extract original codon
+    # Get original codon
     original_codon = sequence[codon_start:codon_start + 3]
+    original_aa = translate_codon(original_codon)
     
     # Create mutated codon
-    position_in_codon = (position - 1) % 3
     mutated_codon = list(original_codon)
-    mutated_codon[position_in_codon] = new_nucleotide
+    mutated_codon[position_in_codon - 1] = new_nucleotide.upper()
     mutated_codon = ''.join(mutated_codon)
+    mutated_aa = translate_codon(mutated_codon)
     
     # Classify mutation
-    mutation_info = classify_mutation(original_codon, mutated_codon)
+    classification = classify_mutation(original_aa, mutated_aa, original_codon, mutated_codon)
     
-    # Calculate pathogenicity
-    pathogenicity = calculate_pathogenicity_score(mutation_info, gene_name)
+    # Create mutation notation
+    mutation_notation = f"{original_aa}{codon_number}{mutated_aa}"
     
-    # Query databases
-    if mutation_info['type'] != 'Silent':
-        aa_change = f"{mutation_info['original_aa']}{codon_number}{mutation_info['mutated_aa']}"
-        clinvar_data = query_clinvar(gene_name, aa_change)
-    else:
-        clinvar_data = {'found': False, 'message': 'Silent mutations not typically in ClinVar'}
+    # Check COSMIC database
+    cosmic_data = check_cosmic_database(gene_name, mutation_notation)
     
-    cosmic_data = query_cosmic(gene_name)
+    # Pathogenicity prediction
+    predictor = PathogenicityPredictor()
+    pathogenicity = predictor.predict(
+        original_aa=original_aa,
+        mutated_aa=mutated_aa,
+        position=codon_number,
+        gene_name=gene_name,
+        cosmic_found=cosmic_data['found']
+    )
     
     # Generate report
-    report_text = generate_report(
-        gene_name, position, original_nt, new_nucleotide,
-        mutation_info, pathogenicity, clinvar_data, cosmic_data
+    report = generate_report(
+        gene_name=gene_name,
+        sequence_length=len(sequence),
+        position=position,
+        codon_number=codon_number,
+        position_in_codon=position_in_codon,
+        original_nucleotide=original_nucleotide,
+        new_nucleotide=new_nucleotide,
+        original_codon=original_codon,
+        mutated_codon=mutated_codon,
+        original_aa=original_aa,
+        mutated_aa=mutated_aa,
+        mutation_notation=mutation_notation,
+        classification=classification,
+        cosmic_data=cosmic_data,
+        pathogenicity=pathogenicity
     )
     
     return {
-        'sequence': sequence,
         'gene_name': gene_name,
+        'sequence_length': len(sequence),
         'position': position,
-        'original_nt': original_nt,
-        'mutated_nt': new_nucleotide,
         'codon_number': codon_number,
-        'mutation_info': mutation_info,
-        'pathogenicity': pathogenicity,
-        'clinvar_data': clinvar_data,
+        'mutation_info': {
+            'original_nucleotide': original_nucleotide,
+            'new_nucleotide': new_nucleotide,
+            'original_codon': original_codon,
+            'mutated_codon': mutated_codon,
+            'original_aa': original_aa,
+            'mutated_aa': mutated_aa,
+            'notation': mutation_notation,
+            'type': classification['type']
+        },
+        'classification': classification,
         'cosmic_data': cosmic_data,
-        'report_text': report_text
+        'pathogenicity': pathogenicity,
+        'report_text': report
     }
 
 
+def generate_report(gene_name, sequence_length, position, codon_number, position_in_codon,
+                   original_nucleotide, new_nucleotide, original_codon, mutated_codon,
+                   original_aa, mutated_aa, mutation_notation, classification,
+                   cosmic_data, pathogenicity):
+    """Generate formatted text report"""
+    
+    report = []
+    report.append("=" * 80)
+    report.append(f"MUTATION ANALYSIS REPORT: {gene_name}")
+    report.append("=" * 80)
+    report.append("")
+    
+    # Basic Information
+    report.append("SEQUENCE INFORMATION:")
+    report.append(f"  Gene:               {gene_name}")
+    report.append(f"  Sequence Length:    {sequence_length} nucleotides ({sequence_length//3} codons)")
+    report.append(f"  Mutation Position:  {position}")
+    report.append(f"  Codon Number:       {codon_number}")
+    report.append(f"  Position in Codon:  {position_in_codon}")
+    report.append("")
+    
+    # Mutation Details
+    report.append("MUTATION DETAILS:")
+    report.append(f"  Original Nucleotide: {original_nucleotide}")
+    report.append(f"  Mutated Nucleotide:  {new_nucleotide}")
+    report.append(f"  Original Codon:      {original_codon}")
+    report.append(f"  Mutated Codon:       {mutated_codon}")
+    report.append(f"  Original Amino Acid: {original_aa}")
+    report.append(f"  Mutated Amino Acid:  {mutated_aa}")
+    report.append(f"  Notation:            {mutation_notation}")
+    report.append("")
+    
+    # Classification
+    report.append("MUTATION CLASSIFICATION:")
+    report.append(f"  Type:     {classification['type']}")
+    report.append(f"  Impact:   {classification['impact']}")
+    report.append(f"  Severity: {classification['severity'].upper()}")
+    report.append("")
+    
+    # COSMIC Database
+    report.append("COSMIC DATABASE CHECK:")
+    if cosmic_data['found']:
+        data = cosmic_data['data']
+        report.append(f"  ✓ FOUND in COSMIC database")
+        report.append(f"  Occurrences:   {data['count']}")
+        report.append(f"  Cancer Types:  {', '.join(data['cancer_types'])}")
+        report.append(f"  Protein Role:  {data['role']}")
+    else:
+        report.append(f"  ✗ Not found in COSMIC database")
+    report.append("")
+    
+    # Pathogenicity
+    report.append("PATHOGENICITY PREDICTION:")
+    report.append(f"  Score:          {pathogenicity['score']:.2f}/10")
+    report.append(f"  Risk Level:     {pathogenicity['risk_level']}")
+    report.append(f"  Classification: {pathogenicity['classification']}")
+    report.append("")
+    report.append("  Factors Contributing to Score:")
+    for factor in pathogenicity['factors']:
+        report.append(f"    • {factor}")
+    report.append("")
+    
+    # Clinical Recommendations
+    report.append("CLINICAL RECOMMENDATIONS:")
+    for i, rec in enumerate(pathogenicity['recommendations'], 1):
+        report.append(f"  {i}. {rec}")
+    report.append("")
+    
+    report.append("=" * 80)
+    report.append("END OF REPORT")
+    report.append("=" * 80)
+    
+    return '\n'.join(report)
+
+
 def main():
-    """
-    Main interactive function with user-friendly error handling.
-    """
+    """Main function - runs the complete analysis with HTML generation"""
+    from visualize_results import create_comprehensive_dashboard
+    import os
+    
     print("=" * 70)
     print("MUTATION IMPACT ANALYZER")
-    print("Fixed version with proper stop codon recognition")
     print("=" * 70)
     print()
     
@@ -592,165 +399,198 @@ def main():
     gene_name = None
     
     if choice == '1':
-        # Load from file
-        filename = input("Enter FASTA filename (in sequences/ folder): ").strip()
+        filename = input("Enter FASTA filename (e.g., TP53.fasta): ").strip()
+        
+        # Clean up the filename - remove any leading path separators
+        filename = filename.replace("sequences/", "").strip()
         filepath = f"sequences/{filename}"
+        
+        print(f"\nLooking for file: {filepath}")
         
         try:
             sequence, description = load_fasta(filepath)
-            print(f"\nLoaded: {description}")
+            print(f"\n✅ Loaded: {description}")
             print(f"Sequence length: {len(sequence)} nucleotides")
-            
-            # Extract gene name from description if possible
-            gene_name = input("Enter gene name: ").strip()
-            
+            gene_name = input("Enter gene name (e.g., TP53): ").strip()
+        except FileNotFoundError:
+            print(f"\n❌ Error: File not found at {filepath}")
+            print(f"\nAvailable files in sequences/ folder:")
+            try:
+                files = os.listdir("sequences/")
+                fasta_files = [f for f in files if f.endswith(('.fasta', '.fa', '.fna'))]
+                if fasta_files:
+                    for f in fasta_files:
+                        print(f"   - {f}")
+                else:
+                    print("   (No FASTA files found)")
+            except:
+                print("   (Could not list files)")
+            return
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"\n❌ Error: {e}")
             return
     
     elif choice == '2':
-        # Direct input with validation loop
         gene_name = input("Enter gene name (e.g., TP53, BRCA1): ").strip()
         
         while True:
-            print("Enter DNA sequence (only A, T, C, G):")
+            print("\nEnter DNA sequence (only A, T, C, G):")
             sequence = input().strip()
-            
-            # Clean sequence
             sequence = sequence.replace(" ", "").replace("\n", "").replace("\r", "").upper()
             
-            # Validate sequence
             is_valid, error_msg = validate_sequence(sequence)
             
             if not is_valid:
-                print(f"\nError: {error_msg}")
-                
-                # Check if it's an incomplete codon issue
-                if "not divisible by 3" in error_msg:
-                    seq_len = len(sequence)
-                    remainder = seq_len % 3
-                    needed = 3 - remainder if remainder != 0 else 0
-                    
-                    print(f"Your sequence has {seq_len} nucleotides.")
-                    print(f"You need to add {needed} more nucleotide(s) to complete the last codon.")
-                    print(f"Or remove {remainder} nucleotide(s) from the end.")
-                
+                print(f"\n❌ Error: {error_msg}")
                 retry = input("\nWould you like to re-enter the sequence? (y/n): ").strip().lower()
                 if retry != 'y':
-                    print("Exiting...")
                     return
                 continue
             else:
-                print(f"\nSequence validated successfully!")
+                print(f"\n✅ Sequence validated!")
                 print(f"Length: {len(sequence)} nucleotides ({len(sequence)//3} codons)")
                 break
-    
     else:
-        print("Invalid choice")
+        print("❌ Invalid choice")
         return
     
-    # Get mutation details with position validation loop
+    # Get mutation position
     print()
-    
+    print("-" * 70)
     while True:
         try:
             position = int(input(f"Enter position to mutate (1-{len(sequence)}): ").strip())
             
-            # Check if position is in valid range
             if position < 1 or position > len(sequence):
-                print(f"Error: Position must be between 1 and {len(sequence)}")
+                print(f"❌ Error: Position must be between 1 and {len(sequence)}")
                 continue
             
-            # Show current nucleotide at that position
             current_nt = sequence[position - 1]
             codon_start = ((position - 1) // 3) * 3
-            codon_number = codon_start // 3 + 1
             current_codon = sequence[codon_start:codon_start + 3]
-            position_in_codon = (position - 1) % 3
             
-            print(f"\nPosition {position} information:")
-            print(f"  Current nucleotide: {current_nt}")
-            print(f"  Current codon: {current_codon} (codon #{codon_number})")
-            print(f"  Position in codon: {position_in_codon + 1} of 3")
-            
-            try:
-                current_aa = translate_codon(current_codon)
-                aa_name = AA_NAMES.get(current_aa, "Unknown")
-                print(f"  Amino acid: {aa_name} ({current_aa})")
-            except:
-                print(f"  Amino acid: Unable to translate")
-            
+            print(f"\n📍 Current nucleotide at position {position}: {current_nt}")
+            print(f"📍 Current codon: {current_codon}")
             break
-            
         except ValueError:
-            print("Error: Please enter a valid number")
+            print("❌ Error: Please enter a valid number")
             continue
     
-    # Get new nucleotide with validation
+    # Get new nucleotide
+    current_nt = sequence[position - 1]
     while True:
         new_nucleotide = input("\nEnter new nucleotide (A/T/C/G): ").strip().upper()
         
         if new_nucleotide not in 'ATCG':
-            print(f"Error: Invalid nucleotide '{new_nucleotide}'. Must be A, T, C, or G")
+            print(f"❌ Error: Invalid nucleotide. Must be A, T, C, or G")
             continue
         
-        # Check if it's the same as current
         if new_nucleotide == current_nt:
-            print(f"Error: Position {position} already contains nucleotide {new_nucleotide}")
-            retry = input("Would you like to choose a different nucleotide? (y/n): ").strip().lower()
+            print(f"❌ Error: Position already contains {new_nucleotide}")
+            retry = input("Choose a different nucleotide? (y/n): ").strip().lower()
             if retry != 'y':
-                print("Exiting...")
                 return
             continue
         
         break
     
-    # Show what the mutation will do
-    mutated_codon_list = list(current_codon)
-    mutated_codon_list[position_in_codon] = new_nucleotide
-    mutated_codon = ''.join(mutated_codon_list)
-    
-    print(f"\nMutation preview:")
-    print(f"  {current_codon} → {mutated_codon}")
-    
-    try:
-        original_aa = translate_codon(current_codon)
-        mutated_aa = translate_codon(mutated_codon)
-        original_aa_name = AA_NAMES.get(original_aa, "Unknown")
-        mutated_aa_name = AA_NAMES.get(mutated_aa, "Unknown")
-        print(f"  {original_aa_name} ({original_aa}) → {mutated_aa_name} ({mutated_aa})")
-    except:
-        pass
-    
-    confirm = input("\nProceed with analysis? (y/n): ").strip().lower()
-    if confirm != 'y':
-        print("Analysis cancelled.")
-        return
-    
     # Perform analysis
     try:
-        print("\nAnalyzing mutation...")
+        print("\n" + "="*70)
+        print("🔬 ANALYZING MUTATION...")
+        print("="*70)
+        
         results = analyze_mutation(sequence, gene_name, position, new_nucleotide)
         
-        # Display report
+        # Display text report
         print("\n" + results['report_text'])
         
-        # Save report to file
-        output_filename = f"output/{gene_name}_P{position}{new_nucleotide}_report.txt"
-        
-        import os
+        # Create output directory
         os.makedirs("output", exist_ok=True)
         
-        with open(output_filename, 'w') as f:
+        # Generate filename
+        mutation_label = f"{results['mutation_info']['original_aa']}{results['codon_number']}{results['mutation_info']['mutated_aa']}"
+        
+        # Save text report
+        text_filename = f"output/{gene_name}_{mutation_label}_report.txt"
+        with open(text_filename, 'w') as f:
             f.write(results['report_text'])
+        print(f"\n📄 Text report saved: {text_filename}")
         
-        print(f"\nReport saved to: {output_filename}")
+        # Generate HTML dashboard
+        print("\n" + "="*70)
+        print("🎨 GENERATING INTERACTIVE HTML DASHBOARD...")
+        print("="*70)
         
+        # Create mutated sequence
+        mutated_sequence = list(sequence)
+        mutated_sequence[position - 1] = new_nucleotide
+        mutated_sequence = ''.join(mutated_sequence)
+        
+        # Prepare visualization data
+        viz_classification = {
+            'notation': mutation_label,
+            'type': results['mutation_info']['type'],
+            'original_codon': results['mutation_info']['original_codon'],
+            'mutated_codon': results['mutation_info']['mutated_codon'],
+            'ref_aa': results['mutation_info']['original_aa'],
+            'alt_aa': results['mutation_info']['mutated_aa'],
+            'codon_number': results['codon_number']
+        }
+        
+        viz_pathogenicity = {
+            'score': results['pathogenicity']['score'],
+            'risk': results['pathogenicity']['risk_level'],
+            'prediction': results['pathogenicity']['classification'],
+            'recommendation': results['pathogenicity']['recommendations'][0] if results['pathogenicity']['recommendations'] else 'See full report'
+        }
+        
+        # Extract pathway data
+        pathways = []
+        if results['cosmic_data'].get('found'):
+            cosmic_data = results['cosmic_data'].get('data', {})
+            if 'role' in cosmic_data:
+                pathways.append((cosmic_data['role'], 'COSMIC'))
+        
+        # Create dashboard
+        try:
+            html_file = create_comprehensive_dashboard(
+                gene_name=gene_name,
+                sequence=sequence,
+                mutated_seq=mutated_sequence,
+                position=position - 1,
+                classification=viz_classification,
+                pathogenicity=viz_pathogenicity,
+                cosmic=results['cosmic_data'],
+                omim={},
+                pathways=pathways
+            )
+            
+            print("\n" + "="*70)
+            print("✅ ANALYSIS COMPLETE!")
+            print("="*70)
+            print(f"\n📊 Files generated:")
+            print(f"   1. 📄 Text Report:    {text_filename}")
+            print(f"   2. 🌐 HTML Dashboard: {html_file}")
+            print(f"\n💡 Open HTML in browser: google-chrome {html_file}")
+            print("="*70)
+            
+        except Exception as viz_error:
+            print(f"\n⚠️  Warning: Could not create HTML dashboard: {viz_error}")
+            print(f"   Text report saved: {text_filename}")
+            
     except Exception as e:
-        print(f"\nError during analysis: {e}")
+        print(f"\n❌ Error during analysis: {e}")
         import traceback
         traceback.print_exc()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Analysis cancelled by user.")
+    except Exception as e:
+        print(f"\n❌ Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
