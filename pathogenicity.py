@@ -1,181 +1,259 @@
 """
-Pathogenicity Assessment Module
-Evaluates the clinical significance of mutations
+Pathogenicity Prediction Module
+Predicts the pathogenicity of mutations based on multiple factors
 """
 
-# Amino acid properties
-AMINO_ACID_PROPERTIES = {
-    'nonpolar': ['G', 'A', 'V', 'L', 'I', 'M', 'P', 'F', 'W'],
-    'polar': ['S', 'T', 'C', 'Y', 'N', 'Q'],
-    'acidic': ['D', 'E'],
-    'basic': ['K', 'R', 'H']
-}
 
-# Mutation type severity
-MUTATION_SEVERITY = {
-    'Silent/Synonymous': {
-        'base_score': 0,
-        'severity': 'Benign',
-        'color': '🟢',
-        'clinical_action': 'No action needed'
-    },
-    'Missense': {
-        'base_score': 2,
-        'severity': 'Variable',
-        'color': '🟡',
-        'clinical_action': 'Further evaluation recommended'
-    },
-    'Nonsense': {
-        'base_score': 4,
-        'severity': 'Pathogenic',
-        'color': '🔴',
-        'clinical_action': 'Genetic counseling strongly recommended'
-    },
-    'Stop-loss': {
-        'base_score': 3,
-        'severity': 'Likely Pathogenic',
-        'color': '🟠',
-        'clinical_action': 'Genetic counseling recommended'
-    }
-}
-
-
-def get_aa_property(amino_acid):
-    """Get the property category of an amino acid"""
-    for prop, aas in AMINO_ACID_PROPERTIES.items():
-        if amino_acid in aas:
-            return prop
-    return 'unknown'
-
-
-def assess_biochemical_change(ref_aa, alt_aa):
+class PathogenicityPredictor:
     """
-    Assess the biochemical impact of amino acid substitution
-    
-    Returns:
-        dict: Impact assessment with score and description
+    Predicts pathogenicity of mutations using rule-based scoring
     """
-    ref_prop = get_aa_property(ref_aa)
-    alt_prop = get_aa_property(alt_aa)
     
-    # Same property = conservative change
-    if ref_prop == alt_prop:
-        return {
-            'conservative': True,
-            'impact_score': 1,
-            'description': f'Conservative change within {ref_prop} group',
-            'severity_modifier': 0
+    def __init__(self):
+        """Initialize the predictor"""
+        self.weights = {
+            'mutation_type': 3.0,
+            'aa_property_change': 2.5,
+            'position': 1.5,
+            'cosmic': 2.0,
+            'conservation': 1.0
         }
-    else:
-        return {
-            'conservative': False,
-            'impact_score': 3,
-            'description': f'Non-conservative change: {ref_prop} → {alt_prop}',
-            'severity_modifier': 1
-        }
-
-
-def calculate_pathogenicity_score(mutation_type, ref_aa, alt_aa, is_hotspot=False):
-    """
-    Calculate comprehensive pathogenicity score
-    
-    Args:
-        mutation_type (str): Type of mutation
-        ref_aa (str): Reference amino acid
-        alt_aa (str): Alternate amino acid
-        is_hotspot (bool): Whether mutation is in known hotspot
-    
-    Returns:
-        dict: Pathogenicity assessment
-    """
-    # Get base severity
-    severity_info = MUTATION_SEVERITY.get(mutation_type, {
-        'base_score': 1,
-        'severity': 'Unknown',
-        'color': '⚪',
-        'clinical_action': 'Uncertain significance'
-    })
-    
-    score = severity_info['base_score']
-    
-    # Enhanced assessment for missense mutations
-    if mutation_type == 'Missense':
-        biochem = assess_biochemical_change(ref_aa, alt_aa)
-        score += biochem['severity_modifier']
         
-        # Hotspot bonus
-        if is_hotspot:
-            score += 1
-            severity_info['severity'] = 'Likely Pathogenic'
-        elif biochem['conservative']:
-            severity_info['severity'] = 'Likely Benign'
+        # Amino acid properties for similarity scoring
+        self.aa_properties = {
+            'hydrophobic': ['A', 'V', 'I', 'L', 'M', 'F', 'W', 'P'],
+            'polar': ['S', 'T', 'C', 'Y', 'N', 'Q'],
+            'charged_positive': ['K', 'R', 'H'],
+            'charged_negative': ['D', 'E'],
+            'special': ['G'],
+            'stop': ['*']
+        }
+    
+    def get_aa_property(self, aa):
+        """Get the property category of an amino acid"""
+        for prop, amino_acids in self.aa_properties.items():
+            if aa in amino_acids:
+                return prop
+        return 'unknown'
+    
+    def predict(self, original_aa, mutated_aa, position, gene_name='', cosmic_found=False):
+        """
+        Predict pathogenicity of a mutation
+        
+        Args:
+            original_aa: Original amino acid (single letter)
+            mutated_aa: Mutated amino acid (single letter)
+            position: Position in the protein (codon number)
+            gene_name: Name of the gene
+            cosmic_found: Whether mutation is found in COSMIC database
+            
+        Returns:
+            dict: Pathogenicity prediction results
+        """
+        score = 0.0
+        factors = []
+        
+        # 1. Mutation Type Scoring
+        if mutated_aa == '*':
+            # Nonsense mutation - creates stop codon
+            score += 4.0
+            factors.append("Nonsense mutation (premature stop codon) - HIGH IMPACT")
+        elif original_aa == '*':
+            # Nonstop mutation
+            score += 3.5
+            factors.append("Nonstop mutation (stop codon lost) - HIGH IMPACT")
+        elif original_aa == mutated_aa:
+            # Synonymous - no change
+            score += 0.0
+            factors.append("Synonymous mutation (no amino acid change) - BENIGN")
         else:
-            severity_info['severity'] = 'Uncertain Significance'
+            # Missense mutation
+            orig_prop = self.get_aa_property(original_aa)
+            mut_prop = self.get_aa_property(mutated_aa)
+            
+            if orig_prop == mut_prop:
+                # Conservative substitution
+                score += 1.5
+                factors.append(f"Conservative missense ({orig_prop} to {mut_prop}) - MODERATE")
+            else:
+                # Non-conservative substitution
+                score += 3.0
+                factors.append(f"Non-conservative missense ({orig_prop} to {mut_prop}) - HIGH")
+                
+                # Extra penalty for specific property changes
+                if (orig_prop in ['charged_positive', 'charged_negative'] and 
+                    mut_prop == 'hydrophobic'):
+                    score += 0.5
+                    factors.append("Charge to hydrophobic change - additional penalty")
+        
+        # 2. COSMIC Database Factor
+        if cosmic_found:
+            score += 2.0
+            factors.append("Found in COSMIC cancer database - SIGNIFICANT")
+        
+        # 3. Position-based scoring (simplified - domains typically critical)
+        # Known critical domains for common cancer genes
+        critical_domains = {
+            'TP53': [(100, 300)],  # DNA-binding domain
+            'BRCA1': [(1, 100), (1560, 1863)],  # RING and BRCT domains
+            'EGFR': [(712, 979)],  # Kinase domain
+        }
+        
+        if gene_name.upper() in critical_domains:
+            for start, end in critical_domains[gene_name.upper()]:
+                if start <= position <= end:
+                    score += 1.5
+                    factors.append(f"Located in critical functional domain (position {position})")
+                    break
+        
+        # 4. Cap the maximum score
+        score = min(score, 10.0)
+        
+        # 5. Determine risk level and classification
+        if score >= 7.0:
+            risk_level = "VERY HIGH"
+            classification = "Likely Pathogenic"
+            color = "red"
+        elif score >= 5.0:
+            risk_level = "HIGH"
+            classification = "Possibly Pathogenic"
+            color = "orange"
+        elif score >= 3.0:
+            risk_level = "MODERATE"
+            classification = "Uncertain Significance"
+            color = "yellow"
+        elif score >= 1.0:
+            risk_level = "LOW"
+            classification = "Likely Benign"
+            color = "lightgreen"
+        else:
+            risk_level = "VERY LOW"
+            classification = "Benign"
+            color = "green"
+        
+        # 6. Generate recommendations
+        recommendations = self._generate_recommendations(
+            score, classification, original_aa, mutated_aa, cosmic_found
+        )
+        
+        return {
+            'score': round(score, 2),
+            'risk_level': risk_level,
+            'classification': classification,
+            'color': color,
+            'factors': factors,
+            'recommendations': recommendations
+        }
     
-    # Cap score at 4
-    score = min(score, 4)
-    
-    # Determine color and interpretation
-    if score == 0:
-        color = '🟢'
-        interpretation = 'BENIGN'
-    elif score == 1:
-        color = '🟢'
-        interpretation = 'LIKELY BENIGN'
-    elif score == 2:
-        color = '🟡'
-        interpretation = 'UNCERTAIN SIGNIFICANCE'
-    elif score == 3:
-        color = '🟠'
-        interpretation = 'LIKELY PATHOGENIC'
-    else:  # score == 4
-        color = '🔴'
-        interpretation = 'PATHOGENIC'
-    
-    return {
-        'score': score,
-        'severity': severity_info['severity'],
-        'color': color,
-        'interpretation': interpretation,
-        'clinical_action': severity_info['clinical_action'],
-        'base_score': severity_info['base_score']
-    }
+    def _generate_recommendations(self, score, classification, original_aa, 
+                                 mutated_aa, cosmic_found):
+        """Generate clinical recommendations based on prediction"""
+        recommendations = []
+        
+        if score >= 7.0:
+            recommendations.append("Urgent: Recommend immediate functional validation studies")
+            recommendations.append("Clinical genetic counseling strongly advised")
+            if cosmic_found:
+                recommendations.append("Review patient and family cancer history")
+            recommendations.append("Consider additional molecular testing")
+        
+        elif score >= 5.0:
+            recommendations.append("Recommend functional validation in relevant cell models")
+            recommendations.append("Genetic counseling advised")
+            recommendations.append("Monitor patient closely for clinical manifestations")
+            if cosmic_found:
+                recommendations.append("Consider tumor sequencing if applicable")
+        
+        elif score >= 3.0:
+            recommendations.append("Uncertain significance - require additional evidence")
+            recommendations.append("Consider segregation analysis in family members")
+            recommendations.append("Recommend periodic re-evaluation as databases are updated")
+            recommendations.append("Functional studies may help clarify significance")
+        
+        elif score >= 1.0:
+            recommendations.append("Likely benign - minimal clinical concern")
+            recommendations.append("Routine monitoring may be sufficient")
+            recommendations.append("Re-evaluate if additional clinical symptoms develop")
+        
+        else:
+            recommendations.append("Benign variant - no clinical action required")
+            recommendations.append("Standard population screening guidelines apply")
+        
+        # Add mutation-specific recommendations
+        if mutated_aa == '*':
+            recommendations.append("Nonsense-mediated decay may occur - check protein expression")
+        elif original_aa == '*':
+            recommendations.append("Extended protein may have altered localization or stability")
+        
+        return recommendations
 
 
-def get_clinical_recommendations(score, gene_name, mutation_type):
+def predict_pathogenicity(original_aa, mutated_aa, position, gene_name='', 
+                         cosmic_found=False):
     """
-    Provide clinical recommendations based on pathogenicity
+    Convenience function for pathogenicity prediction
     
     Args:
-        score (int): Pathogenicity score
-        gene_name (str): Gene name
-        mutation_type (str): Type of mutation
-    
-    Returns:
-        list: List of recommendations
-    """
-    recommendations = []
-    
-    if score >= 3:
-        recommendations.append("🔍 Recommend confirmatory testing with independent method")
-        recommendations.append("👨‍⚕️ Genetic counseling strongly advised")
-        recommendations.append("👨‍👩‍👧‍👦 Consider family testing if hereditary condition")
+        original_aa: Original amino acid
+        mutated_aa: Mutated amino acid
+        position: Position in protein
+        gene_name: Gene name
+        cosmic_found: Whether found in COSMIC
         
-        # Gene-specific recommendations
-        if gene_name in ['BRCA1', 'BRCA2']:
-            recommendations.append("📋 Consider enhanced cancer screening protocols")
-        elif gene_name == 'TP53':
-            recommendations.append("📋 Li-Fraumeni syndrome surveillance protocol may be indicated")
-        elif gene_name == 'HBB':
-            recommendations.append("🩸 Hematology consultation recommended")
+    Returns:
+        dict: Prediction results
+    """
+    predictor = PathogenicityPredictor()
+    return predictor.predict(original_aa, mutated_aa, position, 
+                            gene_name, cosmic_found)
+
+
+# Example usage
+if __name__ == "__main__":
+    # Test the predictor
+    predictor = PathogenicityPredictor()
     
-    elif score == 2:
-        recommendations.append("📊 Additional evidence needed for clinical interpretation")
-        recommendations.append("🔬 Consider segregation analysis in family")
-        recommendations.append("📚 Search for variant in clinical databases (ClinVar, HGMD)")
+    # Test Case 1: Known pathogenic TP53 mutation
+    result1 = predictor.predict(
+        original_aa='R',
+        mutated_aa='H',
+        position=175,
+        gene_name='TP53',
+        cosmic_found=True
+    )
     
-    else:  # score < 2
-        recommendations.append("✅ Likely not clinically significant")
-        recommendations.append("📝 Document for future reference")
+    print("Test Case 1: TP53 R175H (known pathogenic)")
+    print(f"Score: {result1['score']}/10")
+    print(f"Risk: {result1['risk_level']}")
+    print(f"Classification: {result1['classification']}")
+    print(f"Factors: {result1['factors']}")
+    print()
     
-    return recommendations
+    # Test Case 2: Synonymous mutation
+    result2 = predictor.predict(
+        original_aa='L',
+        mutated_aa='L',
+        position=100,
+        gene_name='BRCA1',
+        cosmic_found=False
+    )
+    
+    print("Test Case 2: BRCA1 L100L (synonymous)")
+    print(f"Score: {result2['score']}/10")
+    print(f"Risk: {result2['risk_level']}")
+    print(f"Classification: {result2['classification']}")
+    print()
+    
+    # Test Case 3: Nonsense mutation
+    result3 = predictor.predict(
+        original_aa='Q',
+        mutated_aa='*',
+        position=50,
+        gene_name='TP53',
+        cosmic_found=False
+    )
+    
+    print("Test Case 3: TP53 Q50* (nonsense)")
+    print(f"Score: {result3['score']}/10")
+    print(f"Risk: {result3['risk_level']}")
+    print(f"Classification: {result3['classification']}")
