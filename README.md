@@ -360,8 +360,6 @@ Creates beautiful, interactive visualizations using Plotly.
 - Sequence viewers with color-coded changes
 - Codon comparison bars
 - Risk gauge meters (like a speedometer)
-- Disease association charts
-- Pathway network diagrams
 
 **Key function:**
 ```python
@@ -885,30 +883,6 @@ Want to learn more? Check these out:
 
 ---
 
-## Future Improvements
-
-Ideas for expanding this project:
-
-### Easy Additions:
-- [ ] More gene databases
-- [ ] Additional visualization types
-- [ ] Export results to PDF
-- [ ] Batch processing multiple mutations
-
-### Intermediate:
-- [ ] Web interface using Flask
-- [ ] Multiple sequence alignment
-- [ ] Protein structure prediction
-- [ ] Machine learning predictions
-
-### Advanced:
-- [ ] Real-time database connections
-- [ ] Integration with protein databases
-- [ ] 3D protein structure visualization
-- [ ] Population frequency analysis
-
----
-
 ## Contributing
 
 Want to improve this project?
@@ -970,5 +944,6 @@ MIT License - Free and open source!
 ---
 
 **Happy mutation analyzing! Remember: Every expert was once a beginner.**
+
 
 **Learn. Build. Share. Repeat.**
